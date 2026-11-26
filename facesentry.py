@@ -5,16 +5,25 @@ Everything runs on your own machine. Nothing is uploaded.
 """
 import json
 import os
+import sys
 from datetime import datetime
 
 import cv2
 import numpy as np
 
 FACE_SIZE = (200, 200)
-KNOWN_DIR = "known_faces"
-MODEL_PATH = "model.yml"
-NAMES_PATH = "model_names.json"
-INTRUDER_DIR = "intruders"
+
+# Run from source: files live in the current folder.
+# Run as the packaged Mac app: private data goes to Application Support, snapshots to Pictures.
+if getattr(sys, "frozen", False):
+    _DATA = os.path.join(os.path.expanduser("~"), "Library", "Application Support", "FaceSentry")
+    INTRUDER_DIR = os.path.join(os.path.expanduser("~"), "Pictures", "FaceSentry Intruders")
+else:
+    _DATA = "."
+    INTRUDER_DIR = "intruders"
+KNOWN_DIR = os.path.join(_DATA, "known_faces")
+MODEL_PATH = os.path.join(_DATA, "model.yml")
+NAMES_PATH = os.path.join(_DATA, "model_names.json")
 THRESHOLD = 70.0  # LBPH distance: LOWER means more similar. Above this = unknown face.
 COOLDOWN = 10  # seconds between intruder snapshots
 
@@ -67,6 +76,7 @@ def train(known_dir=KNOWN_DIR, model_path=MODEL_PATH, names_path=NAMES_PATH):
         raise RuntimeError("No face photos found. Run the enroll step first.")
     recognizer = cv2.face.LBPHFaceRecognizer_create()
     recognizer.train(faces, np.array(labels))
+    os.makedirs(os.path.dirname(model_path) or ".", exist_ok=True)
     recognizer.write(model_path)
     with open(names_path, "w") as f:
         json.dump(names, f)
