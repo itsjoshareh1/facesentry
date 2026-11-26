@@ -8,3 +8,5 @@ known_faces/
 intruders/
 model.yml
 model_names.json
+build/
+dist/
