@@ -11,18 +11,26 @@ A webcam watchman for your own laptop. It learns your face, then watches. If som
 - Your face photos, the trained model and intruder snapshots stay on your computer. They are in `.gitignore` so they are never uploaded to GitHub. Keep it that way.
 - This is a learning project, not a lock. Do not rely on it to protect anything important.
 
-## Run it (Mac, no Terminal needed)
+## Download (Mac app, no Terminal)
 
-1. On this page click **Code > Download ZIP**.
-2. Double-click the ZIP to unzip it.
-3. Open the folder and double-click **Start FaceSentry.command**.
-   - First time only: if macOS says it cannot verify the file, right-click it, choose **Open**, then **Open** again.
-   - The first launch takes a minute or two while it installs OpenCV.
-4. macOS asks to let Terminal use the camera. Click **OK**. (If you missed it: System Settings > Privacy & Security > Camera > turn on Terminal, then double-click the file again.)
-5. First run: look at the camera. It takes 20 photos of your face (turn your head a little, change expression), trains, then starts watching.
-6. Press **q** in the camera window to quit. Unknown faces are saved in the `intruders` folder.
+For Macs with Apple silicon (M1 and newer).
 
-To retrain your face later (new glasses, new lighting), delete `model.yml` and launch again.
+1. Go to the [latest release](https://github.com/itsjoshareh1/facesentry/releases/latest) and download **FaceSentry.dmg**.
+2. Open the DMG and drag **FaceSentry** onto **Applications**.
+3. First launch only: the app is not signed by Apple, so macOS blocks it at first.
+   - Right-click **FaceSentry** in Applications and choose **Open**, then **Open** again.
+   - If there is no Open button (newer macOS): try to open it once, then go to **System Settings > Privacy & Security**, scroll down and click **Open Anyway**.
+4. macOS asks to let FaceSentry use the camera. Click **OK**. (Missed it? System Settings > Privacy & Security > Camera > turn on FaceSentry.)
+5. First run: it takes 20 photos of your face (turn your head a little, change expression), then starts watching.
+6. Press **q** in the camera window to quit. Unknown faces are saved in **Pictures > FaceSentry Intruders**.
+
+To retrain your face, delete the folder `~/Library/Application Support/FaceSentry` and open the app again.
+
+Your face photos and the trained model stay in that folder on your Mac. Nothing is uploaded.
+
+### Run from source (no build)
+
+Download the ZIP of this repo, unzip, and double-click **Start FaceSentry.command** (right-click > Open the first time).
 
 ### For developers
 
@@ -43,6 +51,10 @@ pytest
 4. **React:** unknown faces get a red box and a snapshot, at most one every 10 seconds.
 
 Pure OpenCV, no `dlib`, no cloud, installs with plain `pip`.
+
+## How the app is built
+
+`.github/workflows/build-mac-app.yml` runs on a macOS Apple-silicon runner: installs the requirements, runs the tests, builds `FaceSentry.app` with PyInstaller (`FaceSentry.spec`), self-tests it, packs `FaceSentry.dmg` and attaches it to a GitHub Release. Run it from the Actions tab with a tag like `v1.0.0`.
 
 ## Roadmap
 
