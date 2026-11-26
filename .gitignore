@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.venv/
+.env
+.pytest_cache/
+# private: your face photos, trained model and intruder snapshots
+known_faces/
+intruders/
+model.yml
+model_names.json
