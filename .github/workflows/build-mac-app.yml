@@ -1,0 +1,55 @@
+name: Build Mac app
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish"
+        default: "v1.0.0"
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+      - name: Run tests
+        run: python -m pytest -q
+      - name: Build FaceSentry.app
+        run: |
+          pyinstaller --noconfirm FaceSentry.spec
+          codesign --force --deep --sign - dist/FaceSentry.app
+          codesign --verify --deep dist/FaceSentry.app
+      - name: Self-test the built app
+        run: dist/FaceSentry.app/Contents/MacOS/FaceSentry --selftest
+      - name: Check camera permission text and architecture
+        run: |
+          /usr/libexec/PlistBuddy -c "Print :NSCameraUsageDescription" dist/FaceSentry.app/Contents/Info.plist
+          file dist/FaceSentry.app/Contents/MacOS/FaceSentry
+      - name: Make the DMG
+        run: |
+          mkdir dmg_root
+          cp -R dist/FaceSentry.app dmg_root/
+          ln -s /Applications dmg_root/Applications
+          hdiutil create -volname FaceSentry -srcfolder dmg_root -ov -format UDZO FaceSentry.dmg
+          ls -lh FaceSentry.dmg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FaceSentry-dmg
+          path: FaceSentry.dmg
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" FaceSentry.dmg --clobber
+          else
+            gh release create "$TAG" FaceSentry.dmg --title "FaceSentry $TAG" --notes "Download FaceSentry.dmg, open it and drag FaceSentry to Applications. Apple silicon (M1 and newer) Macs. The app is not signed by Apple: see the README for the first-launch steps."
+          fi
