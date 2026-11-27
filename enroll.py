@@ -18,6 +18,7 @@ def enroll(name="me", target=TARGET):
     folder = os.path.join(fs.KNOWN_DIR, name)
     os.makedirs(folder, exist_ok=True)
     detector = fs.load_detector()
+    fs.log(f"Enroll started for '{name}': taking {target} photos.")
     cap = fs.open_camera()
     saved, last = 0, 0.0
     print(f"Enrolling '{name}'. Look at the camera, turn your head a little, change expression.")
@@ -33,18 +34,24 @@ def enroll(name="me", target=TARGET):
             cv2.imwrite(os.path.join(folder, f"{saved:02d}.jpg"), face)
             saved += 1
             last = time.time()
+            fs.log(f"Enroll photo {saved}/{target} captured.")
         for (x, y, w, h) in boxes:
             cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 200, 0), 2)
         msg = f"Captured {saved}/{target}" if len(boxes) == 1 else "Need exactly one face in view"
         cv2.putText(frame, msg, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
-        cv2.imshow("facesentry enroll", frame)
+        cv2.imshow("FaceSentry enroll", frame)
         if cv2.waitKey(1) & 0xFF == ord("q"):
             break
     cap.release()
     cv2.destroyAllWindows()
     if saved == 0:
-        raise RuntimeError("No photos captured. Check the camera and lighting.")
+        fs.log("Enroll failed: no photos captured.")
+        raise RuntimeError(
+            "No photos captured. Check that the camera shows your face, the room is bright, "
+            "and only one face is in view."
+        )
     count, names = fs.train()
+    fs.log(f"Trained on {count} photos for: {', '.join(names)}")
     print(f"Trained on {count} photos for: {', '.join(names)}")
     # TODO (you): enroll several people (it already supports more than one name), and let the
     #             user choose a name in the window instead of the command line.
