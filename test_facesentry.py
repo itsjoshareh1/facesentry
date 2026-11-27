@@ -161,3 +161,15 @@ def test_sface_model_embeds_a_face():
     img = (np.random.default_rng(0).random((160, 160, 3)) * 255).astype("uint8")
     e = fs.FaceEmbedder(path).embed(img, (0, 0, 160, 160))
     assert e.shape == (128,) and abs(float(e @ e) - 1.0) < 1e-3
+
+
+def test_settings_default_on_and_persist(tmp_path):
+    p = str(tmp_path / "s.json")
+    assert fs.load_settings(p)["lock_on_intruder"] is True
+    fs.save_settings({"lock_on_intruder": False}, p)
+    assert fs.load_settings(p)["lock_on_intruder"] is False
+
+
+def test_lock_screen_noop_off_mac(monkeypatch):
+    monkeypatch.setattr(fs.sys, "platform", "linux")
+    assert fs.lock_screen() is None
