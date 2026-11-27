@@ -48,7 +48,7 @@ pytest
 
 ## How it works
 
-1. **Detect:** OpenCV's Haar cascade finds face boxes in each frame, tuned strict so random objects rarely pass. A face must then be tracked for several frames in a row before it counts (you see an orange "checking" box first), so a chair or a one-frame glitch never triggers a photo.
+1. **Detect:** A small pretrained YOLOv8n-face model (run through OpenCV, bundled in the app) finds faces in each frame and ignores weak, tiny or oddly shaped matches. If the model cannot load, FaceSentry falls back to the strict OpenCV Haar detector. The first time you run v1.2 it asks for new photos of you, because recognition is retrained with the new detector. A face must then be tracked for several frames in a row before it counts (you see an orange "checking" box first), so a chair or a one-frame glitch never triggers a photo.
 2. **Prepare:** crop, resize to 200x200, even out lighting.
 3. **Recognize:** an LBPH recognizer compares the face to your photos and returns a distance. Lower means more similar. Under 55 is "known", over is "unknown". You see the number live and tune it with **-** and **+** while it runs.
 4. **React:** confirmed unknown faces get a red box and a snapshot, at most one every 10 seconds, and the next photo needs a fresh confirmation too.
@@ -84,3 +84,7 @@ LBPH is a classic method. Strong light changes, glasses, or a photo of your face
 ## License
 
 MIT
+
+
+## Model credit
+Face detection uses the pretrained YOLOv8n-face weights from https://github.com/akanametov/yolo-face (GPL-3.0 licensed weights, downloaded at build time and not stored in this repo). If you redistribute the built app, check that license.
