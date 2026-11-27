@@ -4,7 +4,7 @@ on:
     inputs:
       tag:
         description: "Release tag to publish"
-        default: "v1.2.0"
+        default: "v1.3.0"
 permissions:
   contents: write
 jobs:
@@ -24,6 +24,10 @@ jobs:
           mkdir -p models
           curl -L --fail -o models/yolov8n-face.onnx https://github.com/akanametov/yolo-face/releases/download/1.0.0/yolov8n-face.onnx
           echo "06b941fd5792be624ad18f2df9ede0a021c4df165dd418204d978c20fd555928  models/yolov8n-face.onnx" | shasum -a 256 -c -
+      - name: Download SFace recognition model
+        run: |
+          curl -L --fail -o models/face_recognition_sface_2021dec.onnx https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx
+          echo "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79  models/face_recognition_sface_2021dec.onnx" | shasum -a 256 -c -
       - name: Run tests
         run: python -m pytest -q
       - name: Build FaceSentry.app
