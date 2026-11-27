@@ -14,6 +14,36 @@ def test_snapshot_name_has_timestamp():
     assert fs.snapshot_name(datetime(2026, 11, 26, 14, 5, 9)) == "intruder_20261126_140509.jpg"
 
 
+def test_snapshot_name_test_prefix():
+    assert fs.snapshot_name(datetime(2026, 11, 27, 8, 0, 0), prefix="test") == "test_20261127_080000.jpg"
+
+
+def test_faces_match_same_face():
+    assert fs.faces_match((100, 100, 80, 80), (110, 105, 80, 80))
+    assert not fs.faces_match((100, 100, 80, 80), (300, 100, 80, 80))
+
+
+def test_track_unknowns_needs_confirm_frames():
+    from watch import track_unknowns, CONFIRM_FRAMES
+    box = (100, 100, 80, 80)
+    cands, confirmed = track_unknowns([], [(box, 80.0)])
+    assert confirmed == []  # one sighting is not enough: objects never trigger photos
+    for _ in range(CONFIRM_FRAMES - 1):
+        cands, confirmed = track_unknowns(cands, [(box, 80.0)])
+    assert len(confirmed) == 1
+    # a face that vanishes right away is forgotten and never confirmed
+    cands, confirmed = track_unknowns([], [(box, 80.0)])
+    for _ in range(3):
+        cands, confirmed = track_unknowns(cands, [])
+    assert confirmed == [] and cands == []
+
+
+def test_default_threshold_is_strict_enough():
+    # Regression guard for the v1.0.0 bug report: the default was 70, lenient enough
+    # that a friend's face was accepted as the enrolled user. Keep it at or under 55.
+    assert fs.THRESHOLD <= 55.0
+
+
 def test_should_save_respects_cooldown():
     assert fs.should_save(None, 100.0)
     assert not fs.should_save(100.0, 105.0, cooldown=10)
