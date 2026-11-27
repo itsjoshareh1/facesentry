@@ -4,7 +4,7 @@ from PyInstaller.utils.hooks import collect_data_files
 a = Analysis(
     ["app_main.py"],
     pathex=["."],
-    datas=collect_data_files("cv2"),
+    datas=collect_data_files("cv2") + [("models/yolov8n-face.onnx", "models")],
     hiddenimports=["enroll", "watch", "facesentry"],
 )
 pyz = PYZ(a.pure)
@@ -16,7 +16,7 @@ app = BUNDLE(
     bundle_identifier="com.itsjoshareh1.facesentry",
     info_plist={
         "CFBundleName": "FaceSentry",
-        "CFBundleShortVersionString": "1.1.0",
+        "CFBundleShortVersionString": "1.2.0",
         "NSHighResolutionCapable": True,
         "NSCameraUsageDescription": "FaceSentry uses the camera to recognize your face and spot unknown people at your laptop. Nothing leaves your Mac.",
     },
