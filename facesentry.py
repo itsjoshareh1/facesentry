@@ -24,8 +24,23 @@ else:
 KNOWN_DIR = os.path.join(_DATA, "known_faces")
 MODEL_PATH = os.path.join(_DATA, "model.yml")
 NAMES_PATH = os.path.join(_DATA, "model_names.json")
-THRESHOLD = 70.0  # LBPH distance: LOWER means more similar. Above this = unknown face.
+LOG_PATH = os.path.join(_DATA, "facesentry.log")
+# LBPH distance: LOWER means more similar. Above this = unknown face.
+# 55 errs on the side of calling a stranger UNKNOWN (you can tune it live with - and +).
+THRESHOLD = 55.0
 COOLDOWN = 10  # seconds between intruder snapshots
+
+
+def log(message):
+    """Append a timestamped line to the log file, so you can always see what the app did."""
+    line = f"{datetime.now():%Y-%m-%d %H:%M:%S}  {message}"
+    try:
+        os.makedirs(os.path.dirname(LOG_PATH) or ".", exist_ok=True)
+        with open(LOG_PATH, "a") as f:
+            f.write(line + "\n")
+    except OSError:
+        pass
+    print(line, flush=True)
 
 
 def load_detector():
@@ -37,8 +52,21 @@ def load_detector():
 
 
 def detect_faces(gray, detector):
-    """Return a list of (x, y, w, h) boxes for faces in a grayscale image."""
-    return detector.detectMultiScale(gray, scaleFactor=1.2, minNeighbors=5, minSize=(80, 80))
+    """Return a list of (x, y, w, h) boxes for faces in a grayscale image.
+
+    minNeighbors=7 is deliberately strict: the default of 5 lets random objects
+    (chairs, hands, patterns) pass as faces. Watch mode also requires a face to
+    stick around for several frames before it counts, see CONFIRM_FRAMES there.
+    """
+    return detector.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=7, minSize=(90, 90))
+
+
+def faces_match(box_a, box_b, tolerance=0.5):
+    """True when two face boxes are roughly the same face in consecutive frames."""
+    ax, ay, aw, ah = box_a
+    bx, by, bw, bh = box_b
+    return (abs((ax + aw / 2) - (bx + bw / 2)) <= aw * tolerance and
+            abs((ay + ah / 2) - (by + bh / 2)) <= ah * tolerance)
 
 
 def prepare_face(gray, box):
@@ -110,10 +138,18 @@ def should_save(last_saved, now, cooldown=COOLDOWN):
 
 
 def open_camera(index=0):
+    log(f"Opening camera (index {index})...")
     cap = cv2.VideoCapture(index)
     if not cap.isOpened():
+        log("The camera would not open.")
+        if getattr(sys, "frozen", False):
+            raise RuntimeError(
+                "macOS is blocking the camera. Go to System Settings > Privacy & Security > "
+                "Camera and turn FaceSentry ON, then open FaceSentry again."
+            )
         raise RuntimeError(
             "Could not open the camera. On a Mac: System Settings > Privacy & Security > "
-            "Camera, allow Terminal, then start again."
+            "Camera, allow Terminal (or your Python app), then start again."
         )
+    log("Camera opened.")
     return cap
