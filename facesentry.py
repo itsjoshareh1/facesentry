@@ -32,6 +32,7 @@ SFACE_FILE = "face_recognition_sface_2021dec.onnx"
 # Cosine similarity between two face fingerprints: HIGHER means more alike. At or above this = a known
 # face. 0.363 is the value recommended for SFace. Tune it live with - (looser) and + (stricter).
 THRESHOLD = 0.363
+SETTINGS_PATH = os.path.join(_DATA, "settings.json")
 COOLDOWN = 10  # seconds between intruder snapshots
 
 
@@ -246,3 +247,55 @@ def open_camera(index=0):
         )
     log("Camera opened.")
     return cap
+
+
+def load_settings(path=SETTINGS_PATH):
+    """User settings. lock_on_intruder defaults to ON."""
+    settings = {"lock_on_intruder": True}
+    try:
+        with open(path) as f:
+            settings.update(json.load(f))
+    except (OSError, ValueError):
+        pass
+    return settings
+
+
+def save_settings(settings, path=SETTINGS_PATH):
+    try:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "w") as f:
+            json.dump(settings, f)
+    except OSError:
+        pass
+
+
+def lock_screen(run=None):
+    """Lock the Mac so a password is needed. Returns the method used, or None if nothing worked.
+
+    1. login.framework SACLockScreenImmediate: a real lock, works on current macOS.
+    2. Old CGSession -suspend (a real lock; the file is gone on newer macOS).
+    3. pmset displaysleepnow: only turns the screen off. It locks ONLY if System Settings >
+       Lock Screen > "Require password after screen saver begins or display is turned off" is
+       set to immediately. Last resort.
+    """
+    import subprocess
+    if sys.platform != "darwin":
+        return None
+    if run is None:
+        run = lambda cmd: subprocess.run(cmd, capture_output=True, timeout=10).returncode == 0
+    try:
+        import ctypes
+        lib = ctypes.CDLL("/System/Library/PrivateFrameworks/login.framework/login")
+        lib.SACLockScreenImmediate()
+        return "SACLockScreenImmediate"
+    except Exception as err:
+        log(f"SACLockScreenImmediate failed: {err}")
+    cg = "/System/Library/CoreServices/Menu Extras/User.menu/Contents/Resources/CGSession"
+    if os.path.exists(cg) and run([cg, "-suspend"]):
+        return "CGSession"
+    try:
+        if run(["pmset", "displaysleepnow"]):
+            return "pmset displaysleepnow (display off only)"
+    except Exception as err:
+        log(f"pmset failed: {err}")
+    return None
