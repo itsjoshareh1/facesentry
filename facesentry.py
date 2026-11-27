@@ -25,6 +25,11 @@ KNOWN_DIR = os.path.join(_DATA, "known_faces")
 MODEL_PATH = os.path.join(_DATA, "model.yml")
 NAMES_PATH = os.path.join(_DATA, "model_names.json")
 LOG_PATH = os.path.join(_DATA, "facesentry.log")
+DETECTOR_TAG_PATH = os.path.join(_DATA, "model_detector.txt")  # which detector the faces were enrolled with
+# YOLOv8n-face (pretrained, ONNX). Downloaded at build time into models/ and bundled in the app.
+YOLO_FILE = "yolov8n-face.onnx"
+YOLO_CONF = 0.60  # minimum YOLO confidence for a face
+MIN_FACE = 60  # smallest face side in pixels that counts
 # LBPH distance: LOWER means more similar. Above this = unknown face.
 # 55 errs on the side of calling a stranger UNKNOWN (you can tune it live with - and +).
 THRESHOLD = 55.0
@@ -43,22 +48,88 @@ def log(message):
     print(line, flush=True)
 
 
-def load_detector():
-    path = os.path.join(cv2.data.haarcascades, "haarcascade_frontalface_default.xml")
-    detector = cv2.CascadeClassifier(path)
-    if detector.empty():
-        raise RuntimeError("Could not load the OpenCV face detector.")
-    return detector
+def _model_dir():
+    if getattr(sys, "frozen", False):
+        return os.path.join(getattr(sys, "_MEIPASS", os.path.dirname(sys.executable)), "models")
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
 
 
-def detect_faces(gray, detector):
-    """Return a list of (x, y, w, h) boxes for faces in a grayscale image.
+class HaarDetector:
+    """Classic OpenCV Haar cascade. Fallback when the YOLO model is missing or fails to load."""
+    name = "haar"
 
-    minNeighbors=7 is deliberately strict: the default of 5 lets random objects
-    (chairs, hands, patterns) pass as faces. Watch mode also requires a face to
-    stick around for several frames before it counts, see CONFIRM_FRAMES there.
+    def __init__(self):
+        path = os.path.join(cv2.data.haarcascades, "haarcascade_frontalface_default.xml")
+        self.cascade = cv2.CascadeClassifier(path)
+        if self.cascade.empty():
+            raise RuntimeError("Could not load the OpenCV face detector.")
+
+    def detect(self, frame):
+        # minNeighbors=7 is strict: the default of 5 lets random objects pass as faces.
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        boxes = self.cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=7, minSize=(90, 90))
+        return [tuple(int(v) for v in b) for b in boxes]
+
+
+class YoloDetector:
+    """YOLOv8n-face (pretrained) run through OpenCV's dnn module. No torch needed."""
+    name = "yolo"
+    SIZE = 640
+
+    def __init__(self, path):
+        self.net = cv2.dnn.readNetFromONNX(path)
+
+    def detect(self, frame):
+        h, w = frame.shape[:2]
+        blob = cv2.dnn.blobFromImage(frame, 1 / 255.0, (self.SIZE, self.SIZE), swapRB=True)
+        self.net.setInput(blob)
+        return parse_yolo(self.net.forward(), w, h)
+
+
+def parse_yolo(output, width, height, conf=YOLO_CONF, min_size=MIN_FACE):
+    """Turn the model output into (x, y, w, h) boxes in frame pixels.
+
+    The model returns rows of [x1, y1, x2, y2, confidence, class, ...] in 640x640 space,
+    already de-duplicated. Weak, tiny or oddly shaped boxes are dropped.
     """
-    return detector.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=7, minSize=(90, 90))
+    rows = np.asarray(output).reshape(-1, np.asarray(output).shape[-1])
+    sx, sy = width / YoloDetector.SIZE, height / YoloDetector.SIZE
+    boxes = []
+    for x1, y1, x2, y2, score in rows[:, :5]:
+        if score < conf:
+            continue
+        x1, x2 = max(0, int(x1 * sx)), min(width, int(x2 * sx))
+        y1, y2 = max(0, int(y1 * sy)), min(height, int(y2 * sy))
+        bw, bh = x2 - x1, y2 - y1
+        if bw < min_size or bh < min_size or not 0.5 <= bw / bh <= 1.6:
+            continue
+        boxes.append((x1, y1, bw, bh))
+    return boxes
+
+
+_DETECTOR = None
+
+
+def load_detector():
+    """Best detector available: YOLO if its model loads, otherwise Haar. Cached."""
+    global _DETECTOR
+    if _DETECTOR is not None:
+        return _DETECTOR
+    path = os.path.join(_model_dir(), YOLO_FILE)
+    try:
+        if not os.path.exists(path):
+            raise FileNotFoundError(path)
+        _DETECTOR = YoloDetector(path)
+        log("Face detector: YOLOv8n-face.")
+    except Exception as err:
+        log(f"YOLO model not available ({err}); using the Haar fallback detector.")
+        _DETECTOR = HaarDetector()
+    return _DETECTOR
+
+
+def detect_faces(frame, detector):
+    """Return a list of (x, y, w, h) face boxes in a BGR camera frame."""
+    return detector.detect(frame)
 
 
 def faces_match(box_a, box_b, tolerance=0.5):
@@ -67,6 +138,20 @@ def faces_match(box_a, box_b, tolerance=0.5):
     bx, by, bw, bh = box_b
     return (abs((ax + aw / 2) - (bx + bw / 2)) <= aw * tolerance and
             abs((ay + ah / 2) - (by + bh / 2)) <= ah * tolerance)
+
+
+def model_matches_detector(detector):
+    """Faces enrolled with one detector crop differently than another, so retrain on a switch."""
+    try:
+        with open(DETECTOR_TAG_PATH) as f:
+            return f.read().strip() == detector.name
+    except OSError:
+        return False
+
+
+def save_detector_tag(detector):
+    with open(DETECTOR_TAG_PATH, "w") as f:
+        f.write(detector.name)
 
 
 def prepare_face(gray, box):
