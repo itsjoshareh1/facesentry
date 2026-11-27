@@ -121,7 +121,7 @@ def track_unknowns(candidates, unknown_boxes):
 def watch(threshold=fs.THRESHOLD):
     detector = fs.load_detector()
     recognizer, names = fs.load_model()
-    fs.log(f"Watch started. Model knows: {', '.join(names)}. Strictness {threshold:.0f}. "
+    fs.log(f"Watch started. Detector: {detector.name}. Model knows: {', '.join(names)}. Strictness {threshold:.0f}. "
            f"Photos save to: {fs.INTRUDER_DIR}")
     cap = fs.open_camera()
     os.makedirs(fs.INTRUDER_DIR, exist_ok=True)
@@ -137,7 +137,7 @@ def watch(threshold=fs.THRESHOLD):
             fs.log("Camera stopped returning frames; ending watch.")
             break
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        boxes = fs.detect_faces(gray, detector)
+        boxes = fs.detect_faces(frame, detector)
         unknown_boxes = []
         for box in boxes:
             name, distance = fs.identify(recognizer, names, fs.prepare_face(gray, box), threshold)
@@ -193,6 +193,7 @@ if __name__ == "__main__":
     parser.add_argument("--threshold", type=float, default=fs.THRESHOLD,
                         help="lower = stricter. Default %(default)s")
     args = parser.parse_args()
-    if args.enroll or not os.path.exists(fs.MODEL_PATH):
+    if (args.enroll or not os.path.exists(fs.MODEL_PATH)
+            or not fs.model_matches_detector(fs.load_detector())):
         enroll()
     watch(args.threshold)
