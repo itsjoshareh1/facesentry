@@ -8,7 +8,7 @@ Keys in the window:
   q     quit
   t     save a TEST photo right now (proves the camera and saving both work)
   o     open the folder where photos are saved
-  - / + stricter / looser recognition (watch the distance numbers while you tune)
+  - / + looser / stricter recognition (watch the match numbers while you tune)
 
 Only watch your own machine. Run:  python watch.py   (add --enroll to retrain your face)
 """
@@ -26,7 +26,8 @@ from enroll import enroll
 BANNER_SECONDS = 3.0  # how long the "PHOTO SAVED" banner stays on screen
 UNKNOWN_LOG_GAP = 5  # seconds between "unknown face" log lines, so the log stays readable
 CONFIRM_FRAMES = 4  # a face must be tracked this many frames before it can trigger a photo
-GRACE_MISSES = 1  # frames a tracked face may vanish (blink, angle) before it is forgotten
+CONFIRM_SECONDS = 2.0  # ...and for at least this long, so a passing odd angle never triggers a photo
+GRACE_MISSES = 2  # frames a tracked face may vanish (blink, angle) before it is forgotten
 
 CHECKING_COLOR = (0, 165, 255)  # orange: possible face, not confirmed yet
 UNKNOWN_COLOR = (0, 0, 255)  # red: confirmed unknown face
@@ -75,7 +76,7 @@ def draw_hud(frame, threshold, face_count):
     overlay = frame.copy()
     cv2.rectangle(overlay, (0, 0), (w, 36), (30, 30, 30), -1)
     cv2.addWeighted(overlay, 0.7, frame, 0.3, 0, frame)
-    status = f"WATCHING | faces: {face_count} | strictness: {threshold:.0f} (-/+) | t=test photo | q=quit"
+    status = f"WATCHING | faces: {face_count} | match level: {threshold:.2f} (-/+) | t=test photo | q=quit"
     cv2.putText(frame, status, (8, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
 
 
@@ -86,14 +87,18 @@ def draw_banner(frame, text):
     cv2.putText(frame, text, (10, h - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
 
 
-def track_unknowns(candidates, unknown_boxes):
+def track_unknowns(candidates, unknown_boxes, known_boxes=(), now=None):
     """Update per-face tracking with this frame's unknown faces.
 
     Each candidate is a possible unknown face. Its count grows while the same face keeps
     showing up; only a candidate seen CONFIRM_FRAMES times is treated as real. This stops
     objects the detector mistakes for a face in a single frame from triggering photos.
+    A candidate is also dropped the moment the same face is recognized as a known person, and
+    when `now` is given it must have been unknown for CONFIRM_SECONDS as well.
     Returns (candidates, confirmed) where confirmed are the candidates that count now.
     """
+    candidates = [c for c in candidates
+                  if not any(fs.faces_match(c["box"], kb) for kb in known_boxes)]
     seen = set()
     for box, distance in unknown_boxes:
         match = None
@@ -102,7 +107,7 @@ def track_unknowns(candidates, unknown_boxes):
                 match = i
                 break
         if match is None:
-            candidates.append({"box": box, "distance": distance, "count": 1, "misses": 0})
+            candidates.append({"box": box, "distance": distance, "count": 1, "misses": 0, "first": now})
             seen.add(len(candidates) - 1)
         else:
             cand = candidates[match]
@@ -114,14 +119,17 @@ def track_unknowns(candidates, unknown_boxes):
             cand["misses"] += 1
         if cand["misses"] <= GRACE_MISSES:
             kept.append(cand)
-    confirmed = [c for c in kept if c["count"] >= CONFIRM_FRAMES]
+    confirmed = [c for c in kept if c["count"] >= CONFIRM_FRAMES
+                 and (now is None or c["first"] is None or now - c["first"] >= CONFIRM_SECONDS)]
     return kept, confirmed
 
 
 def watch(threshold=fs.THRESHOLD):
     detector = fs.load_detector()
-    recognizer, names = fs.load_model()
-    fs.log(f"Watch started. Detector: {detector.name}. Model knows: {', '.join(names)}. Strictness {threshold:.0f}. "
+    embedder = fs.load_embedder()
+    prints, labels = fs.load_enrollment()
+    fs.log(f"Watch started. Detector: {detector.name}. Knows: {', '.join(sorted(set(labels)))} "
+           f"({len(labels)} fingerprints). Match level {threshold:.2f}. "
            f"Photos save to: {fs.INTRUDER_DIR}")
     cap = fs.open_camera()
     os.makedirs(fs.INTRUDER_DIR, exist_ok=True)
@@ -136,26 +144,28 @@ def watch(threshold=fs.THRESHOLD):
         if not ok:
             fs.log("Camera stopped returning frames; ending watch.")
             break
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        boxes = fs.detect_faces(frame, detector)
-        unknown_boxes = []
-        for box in boxes:
-            name, distance = fs.identify(recognizer, names, fs.prepare_face(gray, box), threshold)
-            if name is not None:
-                draw_box(frame, box, KNOWN_COLOR, f"{name} ({distance:.0f})")
-            else:
-                unknown_boxes.append((box, distance))
-        candidates, confirmed = track_unknowns(candidates, unknown_boxes)
-        for cand in candidates:
-            if cand["count"] >= CONFIRM_FRAMES:
-                draw_box(frame, cand["box"], UNKNOWN_COLOR, f"UNKNOWN ({cand['distance']:.0f})")
-            else:
-                draw_box(frame, cand["box"], CHECKING_COLOR, f"checking ({cand['distance']:.0f})")
         now = time.time()
+        found = fs.detect_faces_full(frame, detector)
+        boxes = [box for box, _ in found]
+        unknown_boxes, known_boxes = [], []
+        for box, landmarks in found:
+            fingerprint = embedder.embed(frame, box, landmarks)
+            name, score = fs.identify(prints, labels, fingerprint, threshold)
+            if name is not None:
+                known_boxes.append(box)
+                draw_box(frame, box, KNOWN_COLOR, f"{name} ({score:.2f})")
+            else:
+                unknown_boxes.append((box, score))
+        candidates, confirmed = track_unknowns(candidates, unknown_boxes, known_boxes, now)
+        for cand in candidates:
+            if cand in confirmed:
+                draw_box(frame, cand["box"], UNKNOWN_COLOR, f"UNKNOWN ({cand['distance']:.2f})")
+            else:
+                draw_box(frame, cand["box"], CHECKING_COLOR, f"checking ({cand['distance']:.2f})")
         if confirmed:
             if now - last_unknown_log >= UNKNOWN_LOG_GAP:
-                worst = max(c["distance"] for c in confirmed)
-                fs.log(f"UNKNOWN face confirmed (distance {worst:.0f}, strictness {threshold:.0f}).")
+                best = max(c["distance"] for c in confirmed)
+                fs.log(f"UNKNOWN face confirmed (best match {best:.2f}, needs {threshold:.2f}).")
                 last_unknown_log = now
             if fs.should_save(last_saved, now):
                 path = save_snapshot(frame)
@@ -177,11 +187,11 @@ def watch(threshold=fs.THRESHOLD):
         elif key == ord("o"):
             open_photos_folder()
         elif key in (ord("-"), ord("_")):
-            threshold = max(10.0, threshold - 5)
-            fs.log(f"Strictness changed to {threshold:.0f} (lower = stricter).")
+            threshold = max(0.15, threshold - 0.03)
+            fs.log(f"Match level changed to {threshold:.2f} (lower = looser, fewer false alarms).")
         elif key in (ord("+"), ord("=")):
-            threshold = min(150.0, threshold + 5)
-            fs.log(f"Strictness changed to {threshold:.0f} (higher = looser).")
+            threshold = min(0.80, threshold + 0.03)
+            fs.log(f"Match level changed to {threshold:.2f} (higher = stricter).")
     cap.release()
     cv2.destroyAllWindows()
     fs.log("Watch stopped.")
@@ -191,9 +201,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--enroll", action="store_true", help="capture your face again")
     parser.add_argument("--threshold", type=float, default=fs.THRESHOLD,
-                        help="lower = stricter. Default %(default)s")
+                        help="match level, higher = stricter. Default %(default)s")
     args = parser.parse_args()
-    if (args.enroll or not os.path.exists(fs.MODEL_PATH)
-            or not fs.model_matches_detector(fs.load_detector())):
+    if args.enroll or not fs.has_enrollment():
         enroll()
     watch(args.threshold)
