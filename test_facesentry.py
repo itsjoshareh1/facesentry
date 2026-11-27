@@ -77,3 +77,38 @@ def test_train_without_photos_fails(tmp_path):
         fs.train(str(tmp_path / "known"), str(tmp_path / "m.yml"), str(tmp_path / "n.json"))
 
 # TODO: add a test for two enrolled people once you support multiple known faces.
+
+
+def test_parse_yolo_filters_weak_small_and_odd_boxes():
+    import numpy as np
+    rows = np.zeros((1, 6, 21), dtype="float32")
+    rows[0, 0, :6] = [100, 100, 220, 240, 0.90, 0]   # good face (scaled 1:1 below)
+    rows[0, 1, :6] = [300, 100, 420, 240, 0.30, 0]   # too weak
+    rows[0, 2, :6] = [10, 10, 40, 40, 0.95, 0]       # too small
+    rows[0, 3, :6] = [400, 100, 630, 160, 0.95, 0]   # far too wide for a face
+    boxes = fs.parse_yolo(rows, 640, 640)
+    assert boxes == [(100, 100, 120, 140)]
+
+
+def test_parse_yolo_scales_to_frame():
+    import numpy as np
+    rows = np.zeros((1, 2, 21), dtype="float32")
+    rows[0, 0, :6] = [200, 200, 400, 400, 0.9, 0]
+    assert fs.parse_yolo(rows, 1280, 960) == [(400, 300, 400, 300)]
+
+
+def test_detector_falls_back_to_haar_when_model_missing(monkeypatch, tmp_path):
+    monkeypatch.setattr(fs, "_model_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(fs, "_DETECTOR", None)
+    assert fs.load_detector().name == "haar"
+    monkeypatch.setattr(fs, "_DETECTOR", None)
+
+
+def test_yolo_model_finds_no_face_in_noise():
+    import os
+    import numpy as np
+    path = os.path.join(fs._model_dir(), fs.YOLO_FILE)
+    if not os.path.exists(path):
+        pytest.skip("YOLO model not downloaded")
+    frame = (np.random.default_rng(0).random((480, 640, 3)) * 255).astype("uint8")
+    assert fs.YoloDetector(path).detect(frame) == []
