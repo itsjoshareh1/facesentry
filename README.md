@@ -70,6 +70,10 @@ Pure OpenCV, no `dlib`, no cloud, installs with plain `pip`.
 - [ ] macOS notification when someone is caught
 - [ ] Claude describes the intruder photo (needs your own API key, never commit it)
 
+## Lock on intruder
+
+When an unknown face is confirmed (unknown for 2+ seconds and 4+ frames), FaceSentry saves the photo, **locks your Mac** (a real lock, password needed) and quits so it stops scanning. Press **l** in the watch window to turn this ON/OFF; it is remembered and defaults to ON. If it ever flags YOU, you are locked out until you type your password, so turn it off while testing. Lock method: macOS login framework call, then CGSession, then `pmset displaysleepnow` (this one only turns the screen off; it locks only if your Lock Screen setting requires a password immediately).
+
 ## If it is not catching people
 
 1. **Press t** in the watch window. A test photo with a beep should land in **Pictures > FaceSentry Intruders**. If it does, saving works fine.
