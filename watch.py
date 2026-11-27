@@ -7,6 +7,7 @@ detector mistakes for a face for a split second never trigger a photo.
 Keys in the window:
   q     quit
   t     save a TEST photo right now (proves the camera and saving both work)
+  l     turn "lock the Mac when an intruder is caught" ON/OFF (default ON)
   o     open the folder where photos are saved
   - / + looser / stricter recognition (watch the match numbers while you tune)
 
@@ -70,13 +71,13 @@ def draw_box(frame, box, color, label):
     cv2.putText(frame, label, (x, max(48, y - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
 
 
-def draw_hud(frame, threshold, face_count):
+def draw_hud(frame, threshold, face_count, lock_on=True):
     """Top bar with the live state, so you can see the app is working."""
     h, w = frame.shape[:2]
     overlay = frame.copy()
     cv2.rectangle(overlay, (0, 0), (w, 36), (30, 30, 30), -1)
     cv2.addWeighted(overlay, 0.7, frame, 0.3, 0, frame)
-    status = f"WATCHING | faces: {face_count} | match level: {threshold:.2f} (-/+) | t=test photo | q=quit"
+    status = f"WATCHING | faces: {face_count} | match level: {threshold:.2f} (-/+) | l=lock on intruder: {'ON' if lock_on else 'OFF'} | t=test | q=quit"
     cv2.putText(frame, status, (8, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
 
 
@@ -133,6 +134,7 @@ def watch(threshold=fs.THRESHOLD):
            f"Photos save to: {fs.INTRUDER_DIR}")
     cap = fs.open_camera()
     os.makedirs(fs.INTRUDER_DIR, exist_ok=True)
+    settings = fs.load_settings()
     candidates = []
     last_saved = None
     last_unknown_log = 0.0
@@ -173,7 +175,11 @@ def watch(threshold=fs.THRESHOLD):
                 candidates = []  # the next photo needs a fresh confirmation too
                 banner_until = now + BANNER_SECONDS
                 banner_text = f"PHOTO SAVED: {os.path.basename(path)} - press o to see it"
-        draw_hud(frame, threshold, len(boxes))
+                if settings["lock_on_intruder"]:
+                    method = fs.lock_screen()
+                    fs.log(f"Intruder confirmed: locking the Mac via {method}. FaceSentry is quitting.")
+                    break
+        draw_hud(frame, threshold, len(boxes), settings["lock_on_intruder"])
         if now < banner_until:
             draw_banner(frame, banner_text)
         cv2.imshow("FaceSentry watching", frame)
@@ -186,6 +192,12 @@ def watch(threshold=fs.THRESHOLD):
             banner_text = f"TEST PHOTO SAVED: {os.path.basename(path)} - press o to see it"
         elif key == ord("o"):
             open_photos_folder()
+        elif key == ord("l"):
+            settings["lock_on_intruder"] = not settings["lock_on_intruder"]
+            fs.save_settings(settings)
+            fs.log(f"Lock on intruder is now {'ON' if settings['lock_on_intruder'] else 'OFF'}.")
+            banner_until = time.time() + BANNER_SECONDS
+            banner_text = f"Lock Mac on intruder: {'ON' if settings['lock_on_intruder'] else 'OFF'}"
         elif key in (ord("-"), ord("_")):
             threshold = max(0.15, threshold - 0.03)
             fs.log(f"Match level changed to {threshold:.2f} (lower = looser, fewer false alarms).")
