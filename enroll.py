@@ -17,6 +17,9 @@ GAP = 0.5  # seconds between photos so they are not all identical
 def enroll(name="me", target=TARGET):
     folder = os.path.join(fs.KNOWN_DIR, name)
     os.makedirs(folder, exist_ok=True)
+    for old in os.listdir(folder):  # start fresh so old photos from another detector do not mix in
+        if old.endswith(".jpg"):
+            os.remove(os.path.join(folder, old))
     detector = fs.load_detector()
     fs.log(f"Enroll started for '{name}': taking {target} photos.")
     cap = fs.open_camera()
@@ -28,7 +31,7 @@ def enroll(name="me", target=TARGET):
         if not ok:
             break
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        boxes = fs.detect_faces(gray, detector)
+        boxes = fs.detect_faces(frame, detector)
         if len(boxes) == 1 and time.time() - last >= GAP:
             face = fs.prepare_face(gray, boxes[0])
             cv2.imwrite(os.path.join(folder, f"{saved:02d}.jpg"), face)
@@ -51,6 +54,7 @@ def enroll(name="me", target=TARGET):
             "and only one face is in view."
         )
     count, names = fs.train()
+    fs.save_detector_tag(detector)
     fs.log(f"Trained on {count} photos for: {', '.join(names)}")
     print(f"Trained on {count} photos for: {', '.join(names)}")
     # TODO (you): enroll several people (it already supports more than one name), and let the
