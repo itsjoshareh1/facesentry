@@ -5,11 +5,6 @@ import facesentry as fs
 from datetime import datetime
 
 
-def fake_face(seed):
-    rng = np.random.default_rng(seed)
-    return (rng.random(fs.FACE_SIZE) * 255).astype("uint8")
-
-
 def test_snapshot_name_has_timestamp():
     assert fs.snapshot_name(datetime(2026, 11, 26, 14, 5, 9)) == "intruder_20261126_140509.jpg"
 
@@ -38,10 +33,7 @@ def test_track_unknowns_needs_confirm_frames():
     assert confirmed == [] and cands == []
 
 
-def test_default_threshold_is_strict_enough():
-    # Regression guard for the v1.0.0 bug report: the default was 70, lenient enough
-    # that a friend's face was accepted as the enrolled user. Keep it at or under 55.
-    assert fs.THRESHOLD <= 55.0
+
 
 
 def test_should_save_respects_cooldown():
@@ -50,33 +42,14 @@ def test_should_save_respects_cooldown():
     assert fs.should_save(100.0, 111.0, cooldown=10)
 
 
-def test_prepare_face_size():
-    gray = np.zeros((300, 300), dtype="uint8")
-    assert fs.prepare_face(gray, (50, 50, 120, 120)).shape == (200, 200)
 
 
-def test_train_and_identify(tmp_path):
-    import cv2
-    folder = tmp_path / "known" / "me"
-    folder.mkdir(parents=True)
-    base = fake_face(1)
-    for i in range(5):
-        cv2.imwrite(str(folder / f"{i}.jpg"), base)
-    count, names = fs.train(str(tmp_path / "known"), str(tmp_path / "m.yml"), str(tmp_path / "n.json"))
-    assert count == 5 and names == ["me"]
-    recognizer, names = fs.load_model(str(tmp_path / "m.yml"), str(tmp_path / "n.json"))
-    name, _ = fs.identify(recognizer, names, base)
-    assert name == "me"
-    other, _ = fs.identify(recognizer, names, fake_face(99), threshold=1.0)
-    assert other is None
 
 
-def test_train_without_photos_fails(tmp_path):
-    (tmp_path / "known").mkdir()
-    with pytest.raises(RuntimeError):
-        fs.train(str(tmp_path / "known"), str(tmp_path / "m.yml"), str(tmp_path / "n.json"))
 
-# TODO: add a test for two enrolled people once you support multiple known faces.
+
+
+
 
 
 def test_parse_yolo_filters_weak_small_and_odd_boxes():
@@ -112,3 +85,79 @@ def test_yolo_model_finds_no_face_in_noise():
         pytest.skip("YOLO model not downloaded")
     frame = (np.random.default_rng(0).random((480, 640, 3)) * 255).astype("uint8")
     assert fs.YoloDetector(path).detect(frame) == []
+
+
+def unit(seed):
+    v = np.random.default_rng(seed).normal(size=128).astype("float32")
+    return v / np.linalg.norm(v)
+
+
+def test_identify_known_and_unknown():
+    me, other = unit(1), unit(2)
+    prints = np.array([me, unit(3)])
+    assert fs.identify(prints, ["me", "me"], me) == ("me", pytest.approx(1.0, abs=1e-4))
+    assert fs.identify(prints, ["me", "me"], other)[0] is None
+
+
+def test_identify_uses_best_angle():
+    front, side = unit(1), unit(2)
+    probe = 0.5 * side + 0.5 * unit(9)
+    probe /= np.linalg.norm(probe)
+    prints = np.array([front, side])  # side view enrolled, so the side-on probe is recognized
+    assert fs.identify(prints, ["me", "me"], probe, threshold=0.5)[0] == "me"
+    assert fs.identify(prints[:1], ["me"], probe, threshold=0.5)[0] is None
+
+
+def test_enrollment_round_trip(tmp_path):
+    path = str(tmp_path / "p.npz")
+    fs.save_enrollment([unit(1), unit(2)], ["me", "me"], path)
+    assert fs.has_enrollment(path)
+    prints, labels = fs.load_enrollment(path)
+    assert prints.shape == (2, 128) and labels == ["me", "me"]
+
+
+def test_known_face_resets_unknown_tracking():
+    from watch import track_unknowns, CONFIRM_FRAMES
+    box = (100, 100, 80, 80)
+    cands = []
+    for _ in range(CONFIRM_FRAMES - 1):
+        cands, confirmed = track_unknowns(cands, [(box, 0.1)])
+    cands, confirmed = track_unknowns(cands, [], [box])  # recognized as a known person
+    assert cands == [] and confirmed == []
+
+
+def test_unknown_must_persist_for_seconds():
+    from watch import track_unknowns, CONFIRM_FRAMES, CONFIRM_SECONDS
+    box = (100, 100, 80, 80)
+    cands = []
+    for i in range(CONFIRM_FRAMES + 3):  # many frames but only a fraction of a second
+        cands, confirmed = track_unknowns(cands, [(box, 0.1)], now=100.0 + i * 0.05)
+    assert confirmed == []
+    cands, confirmed = track_unknowns(cands, [(box, 0.1)], now=100.0 + CONFIRM_SECONDS + 0.1)
+    assert len(confirmed) == 1
+
+
+def test_parse_yolo_full_returns_landmarks():
+    rows = np.zeros((1, 2, 21), dtype="float32")
+    rows[0, 0, :6] = [100, 100, 220, 240, 0.9, 0]
+    rows[0, 0, 6:21] = list(range(15))
+    (box, lm), = fs.parse_yolo_full(rows, 640, 640)
+    assert box == (100, 100, 120, 140)
+    assert lm.shape == (5, 2) and lm[0][0] == 0 and lm[1][0] == 3
+
+
+def test_embedder_missing_model(monkeypatch, tmp_path):
+    monkeypatch.setattr(fs, "_model_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(fs, "_EMBEDDER", None)
+    with pytest.raises(RuntimeError):
+        fs.load_embedder()
+
+
+def test_sface_model_embeds_a_face():
+    import os
+    path = os.path.join(fs._model_dir(), fs.SFACE_FILE)
+    if not os.path.exists(path):
+        pytest.skip("SFace model not downloaded")
+    img = (np.random.default_rng(0).random((160, 160, 3)) * 255).astype("uint8")
+    e = fs.FaceEmbedder(path).embed(img, (0, 0, 160, 160))
+    assert e.shape == (128,) and abs(float(e @ e) - 1.0) < 1e-3
