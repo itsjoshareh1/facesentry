@@ -40,7 +40,10 @@ def selftest():
     import cv2
     import numpy as np
 
-    fs.load_detector()
+    detector = fs.load_detector()
+    assert detector.name == "yolo", "YOLO model was not bundled into the app"
+    blank = np.zeros((480, 640, 3), dtype="uint8")
+    assert detector.detect(blank) == [], "detector found a face in a blank frame"
     rng = np.random.default_rng(1)
     face = (rng.random(fs.FACE_SIZE) * 255).astype("uint8")
     tmp = tempfile.mkdtemp()
@@ -65,6 +68,11 @@ def main():
 
         if not os.path.exists(fs.MODEL_PATH):
             fs.log("No trained model found; starting enrollment.")
+            enroll()
+        elif not fs.model_matches_detector(fs.load_detector()):
+            fs.log("Detector changed since enrollment; enrolling again.")
+            alert("FaceSentry got a better face detector. It needs 20 new photos of your face, "
+                  "so look at the camera after you click OK.")
             enroll()
         watch()
     except Exception as err:  # show it instead of dying silently
