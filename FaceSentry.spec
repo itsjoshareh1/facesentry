@@ -16,7 +16,7 @@ app = BUNDLE(
     bundle_identifier="com.itsjoshareh1.facesentry",
     info_plist={
         "CFBundleName": "FaceSentry",
-        "CFBundleShortVersionString": "1.3.0",
+        "CFBundleShortVersionString": "1.4.0",
         "NSHighResolutionCapable": True,
         "NSCameraUsageDescription": "FaceSentry uses the camera to recognize your face and spot unknown people at your laptop. Nothing leaves your Mac.",
     },
