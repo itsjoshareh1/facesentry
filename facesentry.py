@@ -1,6 +1,7 @@
 """facesentry core: face detection, enrolling and recognition with OpenCV only.
 
-Uses OpenCV's Haar cascade to FIND faces and the LBPH recognizer to tell whose face it is.
+Finds faces with a pretrained YOLOv8n-face model (Haar cascade as fallback) and tells whose face
+it is with OpenCV's SFace recognizer, which compares 128-number face "fingerprints".
 Everything runs on your own machine. Nothing is uploaded.
 """
 import json
@@ -11,7 +12,6 @@ from datetime import datetime
 import cv2
 import numpy as np
 
-FACE_SIZE = (200, 200)
 
 # Run from source: files live in the current folder.
 # Run as the packaged Mac app: private data goes to Application Support, snapshots to Pictures.
@@ -22,17 +22,16 @@ else:
     _DATA = "."
     INTRUDER_DIR = "intruders"
 KNOWN_DIR = os.path.join(_DATA, "known_faces")
-MODEL_PATH = os.path.join(_DATA, "model.yml")
-NAMES_PATH = os.path.join(_DATA, "model_names.json")
+EMBED_PATH = os.path.join(_DATA, "face_prints.npz")  # enrolled face fingerprints (SFace)
 LOG_PATH = os.path.join(_DATA, "facesentry.log")
-DETECTOR_TAG_PATH = os.path.join(_DATA, "model_detector.txt")  # which detector the faces were enrolled with
 # YOLOv8n-face (pretrained, ONNX). Downloaded at build time into models/ and bundled in the app.
 YOLO_FILE = "yolov8n-face.onnx"
 YOLO_CONF = 0.60  # minimum YOLO confidence for a face
 MIN_FACE = 60  # smallest face side in pixels that counts
-# LBPH distance: LOWER means more similar. Above this = unknown face.
-# 55 errs on the side of calling a stranger UNKNOWN (you can tune it live with - and +).
-THRESHOLD = 55.0
+SFACE_FILE = "face_recognition_sface_2021dec.onnx"
+# Cosine similarity between two face fingerprints: HIGHER means more alike. At or above this = a known
+# face. 0.363 is the value recommended for SFace. Tune it live with - (looser) and + (stricter).
+THRESHOLD = 0.363
 COOLDOWN = 10  # seconds between intruder snapshots
 
 
@@ -64,6 +63,9 @@ class HaarDetector:
         if self.cascade.empty():
             raise RuntimeError("Could not load the OpenCV face detector.")
 
+    def detect_full(self, frame):
+        return [(box, None) for box in self.detect(frame)]
+
     def detect(self, frame):
         # minNeighbors=7 is strict: the default of 5 lets random objects pass as faces.
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -79,32 +81,45 @@ class YoloDetector:
     def __init__(self, path):
         self.net = cv2.dnn.readNetFromONNX(path)
 
-    def detect(self, frame):
+    def detect_full(self, frame):
+        """Return [(box, landmarks)] where landmarks is 5 (x, y) points: eyes, nose, mouth corners."""
         h, w = frame.shape[:2]
         blob = cv2.dnn.blobFromImage(frame, 1 / 255.0, (self.SIZE, self.SIZE), swapRB=True)
         self.net.setInput(blob)
-        return parse_yolo(self.net.forward(), w, h)
+        return parse_yolo_full(self.net.forward(), w, h)
+
+    def detect(self, frame):
+        return [box for box, _ in self.detect_full(frame)]
 
 
-def parse_yolo(output, width, height, conf=YOLO_CONF, min_size=MIN_FACE):
-    """Turn the model output into (x, y, w, h) boxes in frame pixels.
+def parse_yolo_full(output, width, height, conf=YOLO_CONF, min_size=MIN_FACE):
+    """Turn the model output into [(box, landmarks)] in frame pixels.
 
-    The model returns rows of [x1, y1, x2, y2, confidence, class, ...] in 640x640 space,
+    Rows are [x1, y1, x2, y2, confidence, class, 5 x (x, y, visibility)] in 640x640 space,
     already de-duplicated. Weak, tiny or oddly shaped boxes are dropped.
     """
-    rows = np.asarray(output).reshape(-1, np.asarray(output).shape[-1])
+    arr = np.asarray(output)
+    rows = arr.reshape(-1, arr.shape[-1])
     sx, sy = width / YoloDetector.SIZE, height / YoloDetector.SIZE
-    boxes = []
-    for x1, y1, x2, y2, score in rows[:, :5]:
-        if score < conf:
+    found = []
+    for row in rows:
+        if row[4] < conf:
             continue
-        x1, x2 = max(0, int(x1 * sx)), min(width, int(x2 * sx))
-        y1, y2 = max(0, int(y1 * sy)), min(height, int(y2 * sy))
+        x1, x2 = max(0, int(row[0] * sx)), min(width, int(row[2] * sx))
+        y1, y2 = max(0, int(row[1] * sy)), min(height, int(row[3] * sy))
         bw, bh = x2 - x1, y2 - y1
         if bw < min_size or bh < min_size or not 0.5 <= bw / bh <= 1.6:
             continue
-        boxes.append((x1, y1, bw, bh))
-    return boxes
+        lm = None
+        if row.shape[0] >= 21:
+            lm = row[6:21].reshape(5, 3)[:, :2] * np.array([sx, sy], dtype="float32")
+        found.append(((x1, y1, bw, bh), lm))
+    return found
+
+
+def parse_yolo(output, width, height, conf=YOLO_CONF, min_size=MIN_FACE):
+    """Same as parse_yolo_full but only the (x, y, w, h) boxes."""
+    return [box for box, _ in parse_yolo_full(output, width, height, conf, min_size)]
 
 
 _DETECTOR = None
@@ -132,6 +147,11 @@ def detect_faces(frame, detector):
     return detector.detect(frame)
 
 
+def detect_faces_full(frame, detector):
+    """Return [(box, landmarks or None)] for every face in a BGR camera frame."""
+    return detector.detect_full(frame)
+
+
 def faces_match(box_a, box_b, tolerance=0.5):
     """True when two face boxes are roughly the same face in consecutive frames."""
     ax, ay, aw, ah = box_a
@@ -140,76 +160,64 @@ def faces_match(box_a, box_b, tolerance=0.5):
             abs((ay + ah / 2) - (by + bh / 2)) <= ah * tolerance)
 
 
-def model_matches_detector(detector):
-    """Faces enrolled with one detector crop differently than another, so retrain on a switch."""
-    try:
-        with open(DETECTOR_TAG_PATH) as f:
-            return f.read().strip() == detector.name
-    except OSError:
-        return False
+class FaceEmbedder:
+    """OpenCV SFace: turns a face into a 128-number fingerprint that stays similar across head
+    angles, lighting and expressions far better than the old LBPH recognizer."""
+
+    def __init__(self, path):
+        self.net = cv2.FaceRecognizerSF.create(path, "")
+
+    def embed(self, frame, box, landmarks=None):
+        """Fingerprint (unit length) for one face. With landmarks the face is straightened first."""
+        if landmarks is not None:
+            row = np.concatenate([np.array(box, dtype="float32"),
+                                  np.asarray(landmarks, dtype="float32").reshape(-1),
+                                  [1.0]]).astype("float32").reshape(1, -1)
+            aligned = self.net.alignCrop(frame, row)
+        else:
+            x, y, w, h = box
+            aligned = cv2.resize(frame[max(0, y):y + h, max(0, x):x + w], (112, 112))
+        feat = self.net.feature(aligned).flatten().astype("float32")
+        return feat / (np.linalg.norm(feat) + 1e-9)
 
 
-def save_detector_tag(detector):
-    with open(DETECTOR_TAG_PATH, "w") as f:
-        f.write(detector.name)
+_EMBEDDER = None
 
 
-def prepare_face(gray, box):
-    """Crop a face, resize to a fixed size and even out the lighting."""
-    x, y, w, h = box
-    face = cv2.resize(gray[y:y + h, x:x + w], FACE_SIZE)
-    return cv2.equalizeHist(face)
+def load_embedder():
+    global _EMBEDDER
+    if _EMBEDDER is None:
+        path = os.path.join(_model_dir(), SFACE_FILE)
+        if not os.path.exists(path):
+            raise RuntimeError(f"The face recognition model is missing from the app ({SFACE_FILE}).")
+        _EMBEDDER = FaceEmbedder(path)
+        log("Face recognizer: SFace.")
+    return _EMBEDDER
 
 
-def load_dataset(known_dir=KNOWN_DIR):
-    """Read known_faces/<name>/*.jpg into (faces, labels, names)."""
-    faces, labels, names = [], [], []
-    for name in sorted(os.listdir(known_dir)):
-        folder = os.path.join(known_dir, name)
-        if not os.path.isdir(folder):
-            continue
-        label = len(names)
-        count = 0
-        for file in sorted(os.listdir(folder)):
-            img = cv2.imread(os.path.join(folder, file), cv2.IMREAD_GRAYSCALE)
-            if img is None:
-                continue
-            faces.append(cv2.resize(img, FACE_SIZE))
-            labels.append(label)
-            count += 1
-        if count:
-            names.append(name)
-    return faces, labels, names
+def has_enrollment(path=EMBED_PATH):
+    return os.path.exists(path)
 
 
-def train(known_dir=KNOWN_DIR, model_path=MODEL_PATH, names_path=NAMES_PATH):
-    """Train the recognizer on everything in known_dir and save it."""
-    faces, labels, names = load_dataset(known_dir)
-    if not faces:
-        raise RuntimeError("No face photos found. Run the enroll step first.")
-    recognizer = cv2.face.LBPHFaceRecognizer_create()
-    recognizer.train(faces, np.array(labels))
-    os.makedirs(os.path.dirname(model_path) or ".", exist_ok=True)
-    recognizer.write(model_path)
-    with open(names_path, "w") as f:
-        json.dump(names, f)
-    return len(faces), names
+def save_enrollment(prints, labels, path=EMBED_PATH):
+    """prints: list of unit-length fingerprints; labels: the person's name for each one."""
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    np.savez(path, prints=np.array(prints, dtype="float32"), labels=np.array(labels))
 
 
-def load_model(model_path=MODEL_PATH, names_path=NAMES_PATH):
-    recognizer = cv2.face.LBPHFaceRecognizer_create()
-    recognizer.read(model_path)
-    with open(names_path) as f:
-        names = json.load(f)
-    return recognizer, names
+def load_enrollment(path=EMBED_PATH):
+    data = np.load(path)
+    return data["prints"].astype("float32"), [str(x) for x in data["labels"]]
 
 
-def identify(recognizer, names, face, threshold=THRESHOLD):
-    """Return (name or None, distance). None means an unknown face."""
-    label, distance = recognizer.predict(face)
-    if distance < threshold and 0 <= label < len(names):
-        return names[label], distance
-    return None, distance
+def identify(prints, labels, fingerprint, threshold=THRESHOLD):
+    """Return (name or None, similarity). Similarity is the best cosine match against enrolled prints."""
+    sims = prints @ fingerprint
+    best = int(np.argmax(sims))
+    score = float(sims[best])
+    if score >= threshold:
+        return labels[best], score
+    return None, score
 
 
 def snapshot_name(now=None, prefix="intruder"):
